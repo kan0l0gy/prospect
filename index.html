@@ -50,6 +50,13 @@
   .recent li:first-child{border-top:0}
   .recent .co{font-weight:600}
   .recent .sub{color:var(--muted);font-size:12px}
+  .banner{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--card))}
+  .banner p{margin:4px 0 0;font-size:14px}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
+  .switch{display:flex;gap:10px;align-items:flex-start;font-size:14px;margin:4px 0 12px;cursor:pointer}
+  .switch input{width:20px;height:20px;margin:1px 0 0;flex:none}
+  button.ghost{width:100%;border:1.5px solid var(--line);border-radius:12px;padding:13px;font:600 15px/1 inherit;font-family:inherit;background:none;color:var(--ink);cursor:pointer;margin-top:8px}
   .pill{white-space:nowrap;font-size:12px;border-radius:999px;padding:3px 9px;align-self:center;background:var(--bg);color:var(--muted);border:1px solid var(--line)}
   .pill.delivered{color:var(--ok);border-color:currentColor}
   .pill.failed{color:var(--bad);border-color:currentColor}
@@ -61,7 +68,7 @@
 <main>
   <header>
     <h1>Prospect Engine</h1>
-    <div class="who" id="who" hidden><span id="whoEmail"></span><button id="signOut">Sign out</button></div>
+    <div class="who" id="who" hidden><span id="whoEmail"></span><button id="profileBtn">Profile</button><button id="signOut">Sign out</button></div>
   </header>
 
   <!-- Sign in -->
@@ -82,7 +89,25 @@
   </section>
 
   <!-- Capture -->
+  <!-- Profile -->
+  <section id="profile" hidden>
+    <label class="h">Your profile</label>
+    <div class="field"><label for="pName">Name</label><input type="text" id="pName" autocomplete="name"></div>
+    <div class="field"><label for="pTitle">Title</label><input type="text" id="pTitle"></div>
+    <div class="field"><label for="pTerritory">Territory (state codes)</label><input type="text" id="pTerritory" placeholder="MA, RI, NH, ME"></div>
+    <label class="switch"><input type="checkbox" id="pTool"><span>My email tool (Highspot, Outlook) adds my signature. Drafts end at "Best,".</span></label>
+    <div class="field" id="pSigBox"><label for="pSig">Signature added to every draft</label><textarea id="pSig" rows="6"></textarea></div>
+    <button class="primary" id="pSave" type="button">Save profile</button>
+    <button class="ghost" id="pClose" type="button">Back to capture</button>
+    <p class="msg" id="pMsg" role="status"></p>
+  </section>
+
   <form id="capture" hidden>
+    <section id="setup" class="banner" hidden>
+      <label class="h">First time? Scan your own business card</label>
+      <p>Snap your own card below and tap Create draft. Instead of a prospect email, it sets up your profile (name, title, territory) and emails you what it saved. Nothing is sent to anyone else.</p>
+    </section>
+
     <section>
       <label class="h">What kind of email?</label>
       <div class="types" role="radiogroup">
@@ -146,7 +171,8 @@ const STATUS = {
 async function showForSession(session) {
   const signedIn = !!session;
   $("signin").hidden = signedIn; $("capture").hidden = !signedIn; $("who").hidden = !signedIn;
-  if (signedIn) { $("whoEmail").textContent = session.user.email; loadRecent(); }
+  $("profile").hidden = true;
+  if (signedIn) { $("whoEmail").textContent = session.user.email; loadRecent(); loadProfile(); }
 }
 sb.auth.onAuthStateChange((_e, session) => showForSession(session));
 sb.auth.getSession().then(({ data }) => showForSession(data.session));
@@ -171,6 +197,38 @@ $("verify").onclick = async () => {
 };
 $("code").addEventListener("keydown", (e) => { if (e.key === "Enter") $("verify").click(); });
 $("signOut").onclick = () => sb.auth.signOut();
+
+// ---------- profile ----------
+let me = null;
+async function loadProfile() {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  const { data } = await sb.from("users").select("id,full_name,title,territory_states,signature,signature_mode,onboarding_step").eq("id", user.id).single();
+  me = data;
+  $("setup").hidden = !me || me.onboarding_step === "done";
+}
+function fillProfile() {
+  $("pName").value = me?.full_name ?? ""; $("pTitle").value = me?.title ?? "";
+  $("pTerritory").value = (me?.territory_states ?? []).join(", ");
+  $("pTool").checked = (me?.signature_mode ?? "tool") === "tool";
+  $("pSig").value = me?.signature ?? ""; $("pSigBox").hidden = $("pTool").checked; $("pMsg").textContent = "";
+}
+$("pTool").addEventListener("change", () => { $("pSigBox").hidden = $("pTool").checked; });
+$("profileBtn").onclick = async () => { await loadProfile(); fillProfile(); $("profile").hidden = false; $("capture").hidden = true; };
+$("pClose").onclick = () => { $("profile").hidden = true; $("capture").hidden = false; loadProfile(); };
+$("pSave").onclick = async () => {
+  if (!me) return;
+  const territory = $("pTerritory").value.toUpperCase().split(/[^A-Z]+/).filter((t) => t.length === 2);
+  const patch = { full_name: $("pName").value.trim() || me.full_name, title: $("pTitle").value.trim() || null,
+    territory_states: territory, signature_mode: $("pTool").checked ? "tool" : "custom", signature: $("pSig").value.trim() || null };
+  if (patch.signature_mode === "custom" && !patch.signature) { $("pMsg").className = "msg bad"; $("pMsg").textContent = "Add your signature, or switch the email-tool option back on."; return; }
+  $("pSave").disabled = true;
+  const { error } = await sb.from("users").update(patch).eq("id", me.id);
+  $("pSave").disabled = false;
+  $("pMsg").className = "msg " + (error ? "bad" : "ok");
+  $("pMsg").textContent = error ? error.message : "Saved. Your next draft uses this.";
+  if (!error) Object.assign(me, patch);
+};
 
 // ---------- form behaviour ----------
 function currentType() { return document.querySelector('input[name=type]:checked').value; }
